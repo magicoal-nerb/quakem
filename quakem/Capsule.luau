@@ -554,7 +554,6 @@ function Capsule.collide(c: Capsule, dt: number)
 				continue
 			end
 			
-			-- Only do a physics solve on the last iteration (Kinda a hack, whatever.)
 			local normal: Vector3 = mtv.Unit
 			if typeof(candidate) == "Instance" then
 				Capsule.push(c, candidate, diff * normal, candidate.Anchored and 0.0 or 1.0)

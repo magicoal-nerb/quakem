@@ -107,7 +107,8 @@ local function utilClosestPointTri(a: Vector3, b: Vector3, c: Vector3, p: Vector
 		return c, Vector3.new(0, 0, 1)
 	end
 
-	-- Calculate the determinant of [d1 d2 ; d3 d4] 
+	-- Calculate the determinant of the D entries, which is actually just a cross
+	-- product in disguise (see their derivation in the book for more info)
 	local vc, vb, va = d1 * d4 - d3 * d2, d5 * d2 - d1 * d6, d3 * d6 - d5 * d4
 	if vc <= 0.0 and d1 >= 0.0 and d3 <= 0.0 then
 		-- Then it's just AB
@@ -140,7 +141,6 @@ local function utilGjkClosestPoint(suppA: (Vector3) -> Vector3, suppB: (Vector3)
 	
 	-- Hopefully a pretty neat approach for doing GJK, where we just continually do the tetrahedron
 	-- case. Seems to converge similarly to the standard approach (see Capsule.luau for that.)
-
 	local a = support(delta)
 	local b = support(-a.delta)
 	local c = support(-utilLinePoint(a.delta, b.delta, Vector3.zero))
@@ -507,7 +507,6 @@ local function utilSolveActive(cylinder: Cylinder, planes: { Contact })
 	end
 end
 
-
 local function utilRelevantPlanes(cylinder: Cylinder, planes: { Contact }): { Contact }
 	-- This approximates an actual active-set solver solution to N^T lambda >= 0,
 	-- given that lambda >= 0. However, when I implemented the technique, the technique
@@ -543,10 +542,9 @@ local function utilRelevantPlanes(cylinder: Cylinder, planes: { Contact }): { Co
 end
 
 function Cylinder.getContacts(cylinder: Cylinder, position: Vector3, size: Vector3): { BasePart }
-	-- Stuff that would be considered as potential
-	-- cylinders
+	-- Get plausible contacts, basic broadphasing stuff. Could go the extra mile and use
+	-- https://github.com/magicoal-nerb/dynamic-tree/blob/main/Bvh.luau :3
 	local primitives = {} :: { BasePart }
-
 	for i, part in workspace:GetPartBoundsInBox(CFrame.new(position), size, cylinder.overlap) do
 		if not part.CanCollide then
 			continue
@@ -566,7 +564,7 @@ function Cylinder.push(cylinder: Cylinder, what: BasePart, mtv: Vector3, linFac:
 
 	-- We assume a typical PGS formulation.
 	-- Also, this is exactly how you'd do a contact constraint
-	-- in a typical physics engine :3
+	-- in a typical physics engine!!
 	local pb = what:GetClosestPointOnSurface(cylinder.position)
 	local rA, rB = pb - cylinder.position, pb - what.Position
 

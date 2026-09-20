@@ -1,7 +1,10 @@
 # quakem
-quake movement recreation using two approaches
+custom quake movement recreation using two approaches
 
-* repo contains two robust movement systems, and i demonstrate two different approaches. one is a more general/approximate solution, whereas the other is more focused on primitives and actual analytical TOI and contacts.
+* both colliders use custom physics, so no existing physics api really needs to exist for either of these to work
+* repo contains two robust movement systems, and i demonstrate two different approaches.
+    * capsule is a more general/approximate solution
+    * cylinder is focused on primitives and analytical solutions for TOI and contacts.
 * the collider options should be very easy to embed beyond just quake movement, since it can be used for server authority or as a base for custom player physics. moreover, both of these approaches are deterministic.
 
 ## usage
@@ -12,9 +15,9 @@ quake movement recreation using two approaches
 * uses a probably novel separating axis theorem extension that adds a parabolic TOI (works best on exact primitives, can run faster than FEV/VClip in this scenario)
 * uses a greedy active set solver for discrete collision detection
 * analytical cylinder tracing, supports tracing with velocity and acceleration
-* physics interactions supported, although main purpose is for accuracy
-* does not include terrain/meshparts because i couldn't really find any clean exact solutions that mesh well with roblox's api
-* best for more competitive movement (bhop, surf)
+* physics interactions are mostly supported
+* strictly primitive contacts, so it does not include terrain/meshparts because i couldn't really find any clean exact solutions that mesh well with roblox's api
+* best for more competitive movement (bhop, surf, kz, ...)
 * hopefully no rampbugs
 * framerate independent
 

@@ -29,6 +29,7 @@
 local Terrain = workspace:WaitForChild("Terrain")
 local Capsule = {}
 
+export type Feature = { delta: Vector3, pA: Vector3, pB: Vector3 }
 export type Contact = {
 	normal: Vector3,
 	point: Vector3,
@@ -69,7 +70,7 @@ const kSolverBias = 30
 const kTerrainCutoff = 0.2
 
 -- Number of iterations per terrain GJK call
-const kGjkIters = 4
+const kGjkIters = 32
 
 const kTerrainVerticies: { Vector3 } = {
 	Vector3.new(0, 1, 0), Vector3.new(1, 1, 0), Vector3.new(0, 1, 1), Vector3.new(1, 1, 1),
@@ -121,6 +122,7 @@ local function utilRelevantPlanes(capsule: Capsule, planes: { Contact }): { Cont
 		-- associated with them is unanchored
 		if plane.normal:Dot(capsule.velocity) > 0.0 then continue end
 		if plane.normal:Dot(plane.mtv) <= 0.0 then continue end
+		if plane.part == Terrain then continue end
 		if not plane.part.Anchored then continue end
 		
 		local duplicate = false
@@ -170,98 +172,138 @@ local function utilTerrainCell(sampled: { number }): { Vector3 }
 	return vertices
 end
 
-local function utilClosestPointLine(p: Vector3, q: Vector3, r: Vector3)
-	-- dot(p + pq*t, pq) = dot(r, pq)
-	-- t = dot(r - p, pq) / dot(pq, pq)
-	local pq = q - p
-	return p + pq * math.clamp(pq:Dot(r - p) / pq:Dot(pq), 0.0, 1.0)
+local function utilLinePoint(a: Vector3, b: Vector3, p: Vector3): (Vector3, Vector3)
+	-- dot(a + ab*t, ab) = dot(p, ab)
+	local ab = b - a
+	local abab = ab:Dot(ab)
+
+	if abab < 1e-6 then return a, Vector3.xAxis end
+
+	local t = math.clamp((p - a):Dot(ab) / abab, 0.0, 1.0)
+	return a + ab * t, Vector3.new(1.0 - t, t, 0)
 end
 
-local function utilGjkDistance(support: (Vector3) -> Vector3, centroid: Vector3, pos: Vector3): Vector3
-	-- Mini GJK solver that uses closest points. A bit of a more simplified version compared to the one present
-	-- in the cylinder collider (since that uses the closest feature functionality instead.)
-	local simplex = { support(centroid - pos) - pos }
-	local closest = Vector3.zero
+local function utilClosestPointTri(a: Vector3, b: Vector3, c: Vector3, p: Vector3): (Vector3, Vector3)
+	-- Taken from Christer Ericson's Real Time Collision book
+	local ab, ac, ap, bp, cp = b - a, c - a, p - a, p - b, p - c
+	local norm = ab:Cross(ac)
+
+	if norm:Dot(norm) < 1e-3 then
+		-- If it's degenerate, then check the possible lines
+		local ab, wAB = utilLinePoint(a, b, p) ab -= p
+		local ac, wAC = utilLinePoint(a, c, p) ac -= p
+		local bc, wBC = utilLinePoint(b, c, p) bc -= p
+
+		local abab, acac, bcbc = ab:Dot(ab), ac:Dot(ac), bc:Dot(bc)
+		if abab < acac and abab < bcbc then
+			return ab + p, wAB
+		elseif acac < bcbc then
+			return ac + p, Vector3.new(wAC.X, 0, wAC.Y)
+		else
+			return bc + p, Vector3.new(0, wBC.X, wBC.Y)
+		end
+	end
+
+	local d1, d2, d3, d4, d5, d6 = ab:Dot(ap), ac:Dot(ap), ab:Dot(bp), ac:Dot(bp),
+		ab:Dot(cp), ac:Dot(cp)
+
+	if d1 <= 0.0 and d2 <= 0.0 then
+		-- Inside of AB and AC half plane, so choose A 
+		return a, Vector3.new(1, 0, 0)
+	elseif d3 >= 0.0 and d4 <= d3 then
+		-- Then, we are on the half plane facing AB and BP, so
+		-- we choose B
+		return b, Vector3.new(0, 1, 0)
+	elseif d6 >= 0.0 and d5 <= d6 then
+		-- Then we are on the half plane facing AC and CP, so we
+		-- choose C
+		return c, Vector3.new(0, 0, 1)
+	end
+
+	-- Calculate the determinant of the D entries, which is actually just a cross
+	-- product in disguise (see their derivation in the book for more info)
+	local vc, vb, va = d1 * d4 - d3 * d2, d5 * d2 - d1 * d6, d3 * d6 - d5 * d4
+	if vc <= 0.0 and d1 >= 0.0 and d3 <= 0.0 then
+		-- Then it's just AB
+		local v = d1 / (d1 - d3)
+		return a + v * ab, Vector3.new(1.0 - v, v, 0)
+	elseif vb <= 0.0 and d2 >= 0.0 and d6 <= 0.0 then
+		-- Then it's just AC
+		local w = d2 / (d2 - d6)
+		return a + w * ac, Vector3.new(1.0 - w, 0, w)
+	elseif va <= 0.0 and (d4 - d3) >= 0.0 and (d5 - d6) >= 0.0 then
+		-- Then it's just BC
+		local w = (d4 - d3) / ((d4 - d3) + (d5 - d6))
+		return b + w * (c - b), Vector3.new(0, 1.0 - w, w)
+	end
+
+	-- Interior of poly
+	local denom = 1.0 / (va + vb + vc)
+	local v, w = vb * denom, vc * denom
+	return a + ab * v + ac * w, Vector3.new(1.0 - v - w, v, w)
+end
+
+local function utilGjkClosestPoint(suppA: Vector3, suppB: (Vector3) -> Vector3, delta: Vector3): Vector3
+	local support = function(dir: Vector3): Feature
+		local pA, pB = suppA, suppB(dir)
+		return {
+			delta = pA - pB,
+			pA = pA, pB = pB,
+		}
+	end
+
+	-- Hopefully a pretty neat approach for doing GJK, where we just continually do the tetrahedron
+	-- case. Seems to converge similarly to the standard approach (see Capsule.luau for that.)
+	local a = support(delta)
+	local b = support(-a.delta)
+	local c = support(-utilLinePoint(a.delta, b.delta, Vector3.zero))
 
 	for i = 1, kGjkIters do
-		local length = #simplex
-		if length == 1 then
-			-- I mean, we only have the point, so.
-			closest = simplex[1]
-		elseif length == 2 then
-			-- Get the closest point of a line and
-			-- the origin point
-			local a, b = simplex[1], simplex[2]
-			closest = utilClosestPointLine(a, b, Vector3.zero)
-		elseif length == 3 then
-			-- Get the closest point of a triangle
-			-- and the origin point
-			local a, b, c = simplex[1], simplex[2], simplex[3]
-			local ab, ac, bc = b - a, c - a, c - b
-			local norm = ab:Cross(ac)
-			
-			local abPerp, acPerp, bcPerp = norm:Cross(ab), ac:Cross(norm), bc:Cross(norm)
-			
-			-- Really don't want to bother with winding order
-			abPerp *= math.sign(abPerp:Dot(-ac))
-			acPerp *= math.sign(acPerp:Dot(-ab))
-			bcPerp *= math.sign(bcPerp:Dot(ab))
-
-			if a:Dot(abPerp) < 0.0 then
-				-- Then the closest point should be along the voronoi region along AB
-				closest = utilClosestPointLine(a, b, Vector3.zero)
-			elseif a:Dot(acPerp) < 0.0 then
-				-- Then the closest point should be along the voronoi region along AC
-				closest = utilClosestPointLine(a, c, Vector3.zero)
-			elseif b:Dot(bcPerp) < 0.0 then
-				-- Then the closest point should be along the voronoi region along BC
-				closest = utilClosestPointLine(b, c, Vector3.zero)
-			else
-				-- Then the closest point should be along the triangle
-				closest = norm * norm:Dot(a) / norm:Dot(norm)
-			end
-		elseif length == 4 then
-			local a, b, c, d = simplex[1], simplex[2], simplex[3], simplex[4]
-			local ab, ac, ad, bc = b - a, c - a, d - a, c - b
-
-			-- The tetrahedron creates 4 faces. Just choose one that faces the origin
-			-- and remove the point behind it
-			local abc, acd, adb, bcd = ab:Cross(ac), ac:Cross(ad),
-				ad:Cross(ab), bc:Cross(d - b)
-
-			if abc:Dot(a) > 0.0 then
-				-- Remove point D
-				table.remove(simplex)
-			elseif acd:Dot(a) > 0.0 then
-				-- Remove point B
-				table.remove(simplex, 2)
-			elseif adb:Dot(a) > 0.0 then
-				-- Remove point C
-				table.remove(simplex, 3)
-			elseif bcd:Dot(b) > 0.0 then
-				-- Remove point A
-				table.remove(simplex, 1)
-			else
-				-- Collided
-				return pos
-			end
-
-			continue
-		end
-		
-		-- GJK converges if we added a degenerate
-		-- vertex onto the minkowski sum
-		local result = support(-closest) - pos
-		for j, point in simplex do
-			if point:FuzzyEq(result, 1e-3) then
-				return closest + pos
-			end
+		local point = utilClosestPointTri(a.delta, b.delta, c.delta, Vector3.zero)
+		if point:FuzzyEq(Vector3.zero) then
+			-- We hit the origin, so just return the zero vector
+			break
 		end
 
-		table.insert(simplex, result)
+		-- Search from the closest point for the new point
+		local normal = point.Unit
+		local d = support(normal)
+
+		local dot = d.delta:Dot(normal)
+		local wA, wB, wC = a.delta:Dot(normal), b.delta:Dot(normal), c.delta:Dot(normal)
+		if dot >= math.min(wA, wB, wC) then
+			-- Converged because our distance from the origin did not improve
+			-- (GJK closest point distance has to decrease monotonically.)
+			break
+		end
+
+		-- Replace the furthest triangle (this is basically the tetrahedron case
+		-- but we try to decrease our distance the most!)
+		local wACD = utilClosestPointTri(a.delta, c.delta, d.delta, Vector3.zero)
+		local wABD = utilClosestPointTri(a.delta, b.delta, d.delta, Vector3.zero)
+		local wBCD = utilClosestPointTri(b.delta, c.delta, d.delta, Vector3.zero)
+
+		local acd = wACD:Dot(wACD)
+		local abd = wABD:Dot(wABD)
+		local bcd = wBCD:Dot(wBCD)
+		local abc = point:Dot(point)
+
+		if acd <= abd and acd <= bcd and acd <= abc then
+			-- Choose ACD
+			b = d
+		elseif abd <= bcd and abd <= abc then
+			-- Choose ABD
+			c = d
+		elseif bcd <= abc then
+			-- Choose BCD
+			a = d
+		else
+			break
+		end
 	end
-	
-	return closest + pos
+
+	local point, barycoord = utilClosestPointTri(a.delta, b.delta, c.delta, Vector3.zero)
+	return a.pB * barycoord.X + b.pB * barycoord.Y + c.pB * barycoord.Z
 end
 
 local function utilSolveActive(capsule: Capsule, planes: { Contact })
@@ -457,7 +499,7 @@ function Capsule.getContacts(capsule: Capsule, change: Vector3): { BasePart }
 			AssemblyLinearVelocity = Vector3.zero,
 			AssemblyAngularVelocity = Vector3.zero,
 			GetClosestPointOnSurface = function(_, pos: Vector3)
-				return utilGjkDistance(support, centroid, pos)
+				return utilGjkClosestPoint(pos, support, pos - centroid)
 			end,
 		} :: BasePart)
 	end
@@ -497,27 +539,25 @@ function Capsule.collide(c: Capsule, dt: number)
 		Capsule.push(c, result.Instance :: BasePart, Vector3.zero, 0.0)
 	end
 	
-	c.position += c.velocity * dt
 
 	local candidates = Capsule.getContacts(c, c.velocity * dt)
+	c.position += c.velocity * dt
+
 	debug.profileend()
 
 	debug.profilebegin("capsule::push-solver")
-	
+
 	for i = 1, 2 do
 		table.clear(c.contacts)
 		
 		-- We alternate the heights so it works on concave shapes
 		local offset = Vector3.new(0, math.lerp(-height, height, i % 2), 0)
+		
 		for j, candidate in candidates do
 			-- We estimate the collision candidate through calculating a possible
 			-- plane of intersection.
 			local pb = candidate:GetClosestPointOnSurface(c.position + offset)
-			local pa = utilClosestPointLine(
-				c.position + Vector3.new(0, height, 0),
-				c.position - Vector3.new(0, height, 0),
-				pb
-			)
+			local pa = utilLinePoint(c.position + Vector3.new(0, height, 0), c.position - Vector3.new(0, height, 0), pb)
 
 			local mtv = pa - pb
 			local diff = radius - mtv.Magnitude
@@ -548,15 +588,17 @@ function Capsule.collide(c: Capsule, dt: number)
 
 				mtv = candidate:GetClosestPointOnSurface(c.position + normal * push) - c.position
 				mtv += normal * normal:Dot(size * normal:Sign() * 0.5)
-				diff = 0.0
 				
-				c.position += mtv
-				continue
+				normal = mtv.Unit
+				diff = mtv.Magnitude
 			end
 			
 			local normal: Vector3 = mtv.Unit
 			if typeof(candidate) == "Instance" then
 				Capsule.push(c, candidate, diff * normal, candidate.Anchored and 0.0 or 1.0)
+			else
+				c.position += diff * normal
+				c.velocity = utilConstrain(c.velocity, normal)
 			end
 			
 			-- Append this contact here!

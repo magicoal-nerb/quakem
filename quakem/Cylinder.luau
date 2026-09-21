@@ -28,7 +28,6 @@ const kPlaneMerge = 0.9
 const kSolverBias = 30
 
 export type Feature = { delta: Vector3, pA: Vector3, pB: Vector3 }
-export type Support = (Vector3) -> (Vector3)
 export type Cylinder = {
 	position: Vector3,
 	angularVelocity: Vector3,

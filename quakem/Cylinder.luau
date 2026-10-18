@@ -28,6 +28,7 @@ const kPlaneMerge = 0.9
 const kSolverBias = 30
 
 export type Feature = { delta: Vector3, pA: Vector3, pB: Vector3 }
+export type Support = (Vector3) -> (Vector3)
 export type Cylinder = {
 	position: Vector3,
 	angularVelocity: Vector3,
@@ -138,8 +139,7 @@ local function utilGjkClosestPoint(suppA: (Vector3) -> Vector3, suppB: (Vector3)
 		}
 	end
 	
-	-- Hopefully a pretty neat approach for doing GJK, where we just continually do the tetrahedron
-	-- case. Seems to converge similarly to the standard approach (see Capsule.luau for that.)
+	-- Hopefully a pretty neat approach for doing GJK, where we just continually do the tetrahedron case
 	local a = support(delta)
 	local b = support(-a.delta)
 	local c = support(-utilLinePoint(a.delta, b.delta, Vector3.zero))
@@ -201,7 +201,7 @@ local function utilCylinderSupport(cylinder: Cylinder): (Vector3) -> Vector3
 		local dt, cc = dir.Y, Vector3.zero
 		local pos = cylinder.position
 		if math.abs(dt) < 1e-6 then
-		    return dir * radius + pos
+		    return Vector3.new(dir.X, 0, dir.Z).Unit * radius + pos
 		else
 		    local origin = Vector3.yAxis * height * math.sign(dt)
 		    local plane, t = utilRayPlane(Vector3.zero, dir, origin, Vector3.yAxis)
@@ -375,7 +375,7 @@ local function utilSupport(part: BasePart): (Enum.PartType?, (Vector3) -> Vector
 
 			if dotT == 0 then
 				-- Just use the inner ring
-				final = direction.Unit * radius
+				final = Vector3.new(direction.X, 0, direction.Z).Unit * radius
 			else
 				-- Generic case
 				cPoint = dotT > 0 and cPoint or -cPoint
@@ -433,8 +433,7 @@ local function utilCylinderCastPrimitive(cylinder: Cylinder, part: BasePart, vel
 		table.insert(axes, cframe.Rotation * front)
 		table.insert(axes, cframe.Rotation * right)
 	elseif shape == Enum.PartType.Cylinder then
-		local horiz = (cframe.Position - part.Position) * Vector3.new(1, 0, 1)
-		table.insert(axes, horiz.Unit)
+		table.insert(axes, cylinder.position - cframe.Position)
 	end
 	
 	return pA, utilGenericSat(
@@ -565,7 +564,7 @@ function Cylinder.push(cylinder: Cylinder, what: BasePart, mtv: Vector3, linFac:
 	-- Also, this is exactly how you'd do a contact constraint
 	-- in a typical physics engine!!
 	local pb = what:GetClosestPointOnSurface(cylinder.position)
-	local rA, rB = pb - cylinder.position, pb - what.Position
+	local rA, rB = pb - cylinder.position, pb - what.AssemblyCenterOfMass
 
 	-- Calculate the friction directions
 	local normal = mtv.Unit
@@ -616,8 +615,6 @@ function Cylinder.push(cylinder: Cylinder, what: BasePart, mtv: Vector3, linFac:
 	-- onto the cylinder's linear velocity (but angular velocity is okay.)
 	local impulse = math.max(-nDot * invEffMass, 0.0) * normal + friction
 	cylinder.angularVelocity += iA * rA:Cross(impulse)
-
-	cylinder.position += mtv * linFac
 	cylinder.velocity += mA * (impulse - friction) * linFac
 
 	if not what.Anchored then
@@ -651,6 +648,8 @@ function Cylinder.collide(c: Cylinder, dt: number)
 	end
 
 	c.position += c.velocity * ccd + 0.5 * c.acceleration * ccd * ccd
+	c.velocity += c.acceleration * ccd
+	
 	if ccd < dt then
 		-- Minimize dot(disp, normal), given velocity + normal*lambda_1
 		local dot = math.min(c.velocity:Dot(ccdNormal), 0.0)

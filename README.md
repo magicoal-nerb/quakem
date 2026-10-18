@@ -6,9 +6,10 @@ custom quake movement recreation using two approaches
     * capsule is a more general/approximate solution
     * cylinder is focused on primitives and analytical solutions for TOI and contacts.
 * the collider options should be very easy to embed beyond just quake movement, since it can be used for server authority or as a base for custom player physics. moreover, both of these approaches are deterministic.
+* designed so you can just pick and choose one of the colliders. there's some code duplication as a result (particularly with physics response) but it's just for cleaner packaging.
 
 ## usage
-* example script in init.client.luau
+* example script in init.client.luau (uses variable dt per demonstration, you'd use fixed update hz for server auth.)
 * also if you do use this, i'd appreciate it if you credit this project!! :D
 
 ## cylinder

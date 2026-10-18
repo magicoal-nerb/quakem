@@ -144,11 +144,6 @@ function Quakem.think(q: Quakem, dt: number)
 	-- <=> e^(kP*dt)w_y(t) - w_y = w_t(e^(kP*t) - 1)
 	-- <=> e^(-kP*dt) w_y + (1-e^(-kP*dt))*w_t
 	local kPt = math.exp(-kTurnStiffness * dt)
-	local invCapsuleInertia = Collider.utilInverseInertia(
-		q.rotation, Vector3.new(q.radius, q.height, q.radius) * 2.0,
-		q.mass
-	)
-
 	q.angularVelocity += (kPt - 1.0) * q.angularVelocity + (1.0 - kPt) * desiredAngular * Vector3.yAxis
 	q.angularVelocity *= Vector3.yAxis
 	q.rotation = CFrame.Angles(0, q.angularVelocity.Y * dt, 0) * q.rotation
@@ -173,7 +168,7 @@ function Quakem.step(q: Quakem, dt: number)
 		-- Just jump!
 		state = Enum.HumanoidStateType.Jumping
 		q.acceleration = Vector3.zero
-		q.velocity = Vector3.new(q.velocity.X, 25, q.velocity.Z)
+		q.velocity = Vector3.new(q.velocity.X, q.humanoid.JumpPower, q.velocity.Z)
 	elseif floor.Y ~= 0.0 and floorPart then
 		-- Then, we're on the ground. Just apply basic
 		-- friction and go.
@@ -195,7 +190,9 @@ function Quakem.step(q: Quakem, dt: number)
 			q.humanoid.WalkSpeed,
 			dt
 		) * kVecXZ
-
+		
+		-- Just hang on the floor. Intentional that I didn't do a proper
+		-- projection for clipping velocity.
 		state = Enum.HumanoidStateType.Running
 		q.acceleration = -floor:Dot(wishDirection * wishDirection:Dot(q.velocity)) * Vector3.yAxis
 		q.velocity -= floor:Dot(q.velocity) * Vector3.yAxis + floor
@@ -212,7 +209,6 @@ function Quakem.step(q: Quakem, dt: number)
 		state = Enum.HumanoidStateType.Freefall
 		q.acceleration = -kGravity * Vector3.yAxis
 		q.velocity = (q.velocity * Vector3.yAxis) + projection
-		q.velocity -= kGravity * Vector3.yAxis * dt
 	end
 
 	Collider.collide(q, dt)
